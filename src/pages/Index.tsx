@@ -66,293 +66,363 @@ const Index = () => {
   const [powerModeTimer, setPowerModeTimer] = useState<NodeJS.Timeout | null>(null);
   const gameLoopRef = useRef<NodeJS.Timeout | null>(null);
 
-  useEffect(() => {
-    const updateCellSize = () => {
-      const screenWidth = window.innerWidth;
-      const screenHeight = window.innerHeight;
-      const maxWidth = Math.min(screenWidth - 32, 600);
-      const maxHeight = Math.min(screenHeight - 300, 600);
-      const size = Math.floor(Math.min(maxWidth, maxHeight) / GRID_SIZE);
-      setCellSize(Math.max(size, 12));
-    };
-
-    updateCellSize();
-    window.addEventListener('resize', updateCellSize);
-    return () => window.removeEventListener('resize', updateCellSize);
-  }, []);
-
-  useEffect(() => {
-    const initialDots = MAZE.map((row, y) =>
-      row.split('').map((cell, x) => cell === '.' || cell === 'P')
-    );
-    setDots(initialDots);
-  }, []);
-
-  const isWall = (x: number, y: number) => {
-    if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) return true;
-    return MAZE[y][x] === '#';
-  };
-
-  const movePacman = useCallback(() => {
-    if (gameOver || gameWon) return;
-
-    const moves: Record<Direction, Position> = {
-      UP: { x: pacman.x, y: pacman.y - 1 },
-      DOWN: { x: pacman.x, y: pacman.y + 1 },
-      LEFT: { x: pacman.x - 1, y: pacman.y },
-      RIGHT: { x: pacman.x + 1, y: pacman.y },
-    };
-
-    const newPos = moves[direction];
-    if (!isWall(newPos.x, newPos.y)) {
-      setPacman(newPos);
-
-      if (dots[newPos.y]?.[newPos.x]) {
-        setDots(prev => {
-          const updated = [...prev];
-          updated[newPos.y] = [...updated[newPos.y]];
-          updated[newPos.y][newPos.x] = false;
-          return updated;
-        });
-        setScore(prev => prev + 10);
+  const initializeDots = useCallback(() => {
+    const newDots = new Set<string>();
+    for (let y = 0; y < MAZE.length; y++) {
+      for (let x = 0; x < MAZE[y].length; x++) {
+        if (MAZE[y][x] === '.') {
+          newDots.add(`${x},${y}`);
+        }
       }
     }
-  }, [pacman, direction, gameOver, gameWon, dots]);
+    setDots(newDots);
+  }, []);
 
-  const moveGhosts = useCallback(() => {
-    if (gameOver || gameWon) return;
+  const isWall = (x: number, y: number): boolean => {
+    if (y < 0 || y >= MAZE.length || x < 0 || x >= MAZE[0].length) return true;
+    return MAZE[y][x] === '#' || MAZE[y][x] === '-';
+  };
 
-    setGhosts(prev =>
-      prev.map(ghost => {
-        const directions: Direction[] = ['UP', 'DOWN', 'LEFT', 'RIGHT'];
-        const validMoves = directions
-          .map(dir => {
-            const moves: Record<Direction, Position> = {
-              UP: { x: ghost.x, y: ghost.y - 1 },
-              DOWN: { x: ghost.x, y: ghost.y + 1 },
-              LEFT: { x: ghost.x - 1, y: ghost.y },
-              RIGHT: { x: ghost.x + 1, y: ghost.y },
-            };
-            return moves[dir];
-          })
-          .filter(pos => !isWall(pos.x, pos.y));
+  const canMove = (pos: Position, dir: Direction): boolean => {
+    if (!dir) return false;
+    let newX = pos.x;
+    let newY = pos.y;
 
-        if (validMoves.length === 0) return ghost;
-        return validMoves[Math.floor(Math.random() * validMoves.length)];
-      })
-    );
-  }, [gameOver, gameWon]);
-
-  useEffect(() => {
-    const pacmanInterval = setInterval(movePacman, 200);
-    return () => clearInterval(pacmanInterval);
-  }, [movePacman]);
-
-  useEffect(() => {
-    const ghostInterval = setInterval(moveGhosts, 300);
-    return () => clearInterval(ghostInterval);
-  }, [moveGhosts]);
-
-  useEffect(() => {
-    const collision = ghosts.some(
-      ghost => ghost.x === pacman.x && ghost.y === pacman.y
-    );
-    if (collision) {
-      setGameOver(true);
+    switch (dir) {
+      case 'UP': newY--; break;
+      case 'DOWN': newY++; break;
+      case 'LEFT': newX--; break;
+      case 'RIGHT': newX++; break;
     }
-  }, [ghosts, pacman]);
+
+    return !isWall(newX, newY);
+  };
+
+  const moveEntity = (pos: Position, dir: Direction): Position => {
+    if (!dir) return pos;
+    let newX = pos.x;
+    let newY = pos.y;
+
+    switch (dir) {
+      case 'UP': newY--; break;
+      case 'DOWN': newY++; break;
+      case 'LEFT': newX--; break;
+      case 'RIGHT': newX++; break;
+    }
+
+    if (newX < 0) newX = GRID_SIZE - 1;
+    if (newX >= GRID_SIZE) newX = 0;
+
+    return isWall(newX, newY) ? pos : { x: newX, y: newY };
+  };
+
+  const getDistance = (pos1: Position, pos2: Position): number => {
+    return Math.abs(pos1.x - pos2.x) + Math.abs(pos1.y - pos2.y);
+  };
+
+  const getGhostDirection = (ghost: Position, target: Position): Direction => {
+    const directions: Direction[] = ['UP', 'DOWN', 'LEFT', 'RIGHT'];
+    let bestDir: Direction = null;
+    let bestDist = powerMode ? -Infinity : Infinity;
+
+    for (const dir of directions) {
+      const newPos = moveEntity(ghost, dir);
+      if (newPos.x !== ghost.x || newPos.y !== ghost.y) {
+        const dist = getDistance(newPos, target);
+        if (powerMode ? dist > bestDist : dist < bestDist) {
+          bestDist = dist;
+          bestDir = dir;
+        }
+      }
+    }
+
+    return bestDir;
+  };
+
+  const checkCollision = useCallback((pacPos: Position, ghostPos: Position[]): boolean => {
+    return ghostPos.some(g => g.x === pacPos.x && g.y === pacPos.y);
+  }, []);
+
+  const gameLoop = useCallback(() => {
+    setPacman(prev => {
+      let currentDir = direction;
+      
+      if (nextDirection && canMove(prev, nextDirection)) {
+        currentDir = nextDirection;
+        setDirection(nextDirection);
+        setNextDirection(null);
+      }
+
+      const newPos = moveEntity(prev, currentDir);
+      
+      const posKey = `${newPos.x},${newPos.y}`;
+      if (dots.has(posKey)) {
+        setDots(prevDots => {
+          const newDots = new Set(prevDots);
+          newDots.delete(posKey);
+          return newDots;
+        });
+        setScore(s => s + 10);
+      }
+
+      if (MAZE[newPos.y][newPos.x] === 'O') {
+        setPowerMode(true);
+        if (powerModeTimer) clearTimeout(powerModeTimer);
+        const timer = setTimeout(() => setPowerMode(false), 7000);
+        setPowerModeTimer(timer);
+        setScore(s => s + 50);
+      }
+
+      return newPos;
+    });
+
+    setGhosts(prevGhosts => prevGhosts.map(ghost => {
+      const dir = getGhostDirection(ghost, pacman);
+      return moveEntity(ghost, dir);
+    }));
+  }, [direction, nextDirection, dots, canMove, moveEntity, pacman, powerMode, powerModeTimer]);
 
   useEffect(() => {
-    const allDotsEaten = dots.every(row => row.every(dot => !dot));
-    if (allDotsEaten && dots.length > 0) {
-      setGameWon(true);
+    if (gameState === 'playing') {
+      gameLoopRef.current = setInterval(gameLoop, 1000 / FPS);
+      return () => {
+        if (gameLoopRef.current) clearInterval(gameLoopRef.current);
+      };
     }
-  }, [dots]);
+  }, [gameState, gameLoop]);
+
+  useEffect(() => {
+    const collision = checkCollision(pacman, ghosts);
+    if (collision && gameState === 'playing') {
+      if (powerMode) {
+        setScore(s => s + 200);
+      } else {
+        setLives(l => {
+          const newLives = l - 1;
+          if (newLives <= 0) {
+            setGameState('gameover');
+          } else {
+            setPacman({ x: 14, y: 23 });
+            setGhosts(GHOSTS_START);
+          }
+          return newLives;
+        });
+      }
+    }
+  }, [pacman, ghosts, gameState, powerMode, checkCollision]);
+
+  useEffect(() => {
+    if (dots.size === 0 && gameState === 'playing') {
+      initializeDots();
+      setPacman({ x: 14, y: 23 });
+      setGhosts(GHOSTS_START);
+    }
+  }, [dots, gameState, initializeDots]);
 
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
+      if (gameState !== 'playing') return;
+      
       switch (e.key) {
         case 'ArrowUp':
-          setDirection('UP');
+          e.preventDefault();
+          setNextDirection('UP');
           break;
         case 'ArrowDown':
-          setDirection('DOWN');
+          e.preventDefault();
+          setNextDirection('DOWN');
           break;
         case 'ArrowLeft':
-          setDirection('LEFT');
+          e.preventDefault();
+          setNextDirection('LEFT');
           break;
         case 'ArrowRight':
-          setDirection('RIGHT');
+          e.preventDefault();
+          setNextDirection('RIGHT');
+          break;
+        case ' ':
+          e.preventDefault();
+          setGameState('paused');
           break;
       }
     };
 
     window.addEventListener('keydown', handleKeyPress);
     return () => window.removeEventListener('keydown', handleKeyPress);
-  }, []);
+  }, [gameState]);
 
-  const resetGame = () => {
-    setPacman({ x: 9, y: 15 });
-    setDirection('RIGHT');
-    setGhosts(GHOSTS_START);
+  const startGame = () => {
+    setGameState('playing');
     setScore(0);
-    setGameOver(false);
-    setGameWon(false);
-    const initialDots = MAZE.map((row, y) =>
-      row.split('').map((cell, x) => cell === '.' || cell === 'P')
-    );
-    setDots(initialDots);
+    setLives(3);
+    setPacman({ x: 14, y: 23 });
+    setDirection(null);
+    setNextDirection(null);
+    setGhosts(GHOSTS_START);
+    initializeDots();
+    setPowerMode(false);
+  };
+
+  const resumeGame = () => {
+    setGameState('playing');
   };
 
   return (
-    <div className="min-h-screen bg-black flex flex-col items-center justify-start p-2 sm:p-8 sm:justify-center overflow-hidden">
-      <div className="flex flex-col items-center gap-2 sm:gap-6 w-full max-w-screen-sm">
-        <div className="text-center py-2">
-          <h1 className="text-2xl sm:text-5xl font-bold mb-1 sm:mb-2 text-yellow-400 retro-text">PAC-MAN</h1>
-          <p className="text-lg sm:text-2xl text-white">Счёт: {score}</p>
-        </div>
+    <div className="min-h-screen bg-[#000000] flex items-center justify-center p-4 font-['Press_Start_2P']">
+      <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet" />
+      
+      <div className="text-center">
+        <h1 className="text-[#FFFF00] text-4xl mb-8 drop-shadow-[0_0_10px_#FFFF00]">
+          PAC-MAN
+        </h1>
 
-        <Card className="bg-gray-900 p-0.5 sm:p-1 border-2 sm:border-4 border-blue-600 touch-none">
-          <div
-            className="relative"
-            style={{
-              width: GRID_SIZE * cellSize,
-              height: GRID_SIZE * cellSize,
-            }}
-          >
-            {MAZE.map((row, y) =>
-              row.split('').map((cell, x) => (
-                <div
-                  key={`${x}-${y}`}
-                  className="absolute"
-                  style={{
-                    left: x * cellSize,
-                    top: y * cellSize,
-                    width: cellSize,
-                    height: cellSize,
-                  }}
-                >
-                  {cell === '#' && (
-                    <div className="w-full h-full bg-blue-600 border border-blue-400" />
-                  )}
-                  {dots[y]?.[x] && (
-                    <div className="w-full h-full flex items-center justify-center">
-                      <div 
-                        className="bg-yellow-200 rounded-full"
-                        style={{
-                          width: Math.max(cellSize * 0.2, 2),
-                          height: Math.max(cellSize * 0.2, 2),
-                        }}
-                      />
-                    </div>
-                  )}
-                </div>
-              ))
-            )}
-
-            <div
-              className="absolute transition-all duration-200"
-              style={{
-                left: pacman.x * cellSize,
-                top: pacman.y * cellSize,
-                width: cellSize,
-                height: cellSize,
-              }}
-            >
-              <div 
-                className="w-full h-full bg-yellow-400 rounded-full flex items-center justify-center"
-                style={{ fontSize: Math.max(cellSize * 0.6, 10) }}
-              >
-                {direction === 'RIGHT' && '▶'}
-                {direction === 'LEFT' && '◀'}
-                {direction === 'UP' && '▲'}
-                {direction === 'DOWN' && '▼'}
-              </div>
+        {gameState === 'menu' && (
+          <div className="animate-fade-in">
+            <div className="mb-8">
+              <div className="text-[#FFB897] text-2xl mb-4">🟡</div>
+              <p className="text-[#00FFFF] text-sm mb-2">Use Arrow Keys to Move</p>
+              <p className="text-[#FFB8FF] text-sm mb-6">Press Space to Pause</p>
             </div>
-
-            {ghosts.map((ghost, i) => (
-              <div
-                key={i}
-                className="absolute transition-all duration-300"
-                style={{
-                  left: ghost.x * cellSize,
-                  top: ghost.y * cellSize,
-                  width: cellSize,
-                  height: cellSize,
-                }}
-              >
-                <div
-                  className={`w-full h-full rounded-t-full flex items-center justify-center ${
-                    i === 0 ? 'bg-red-500' : i === 1 ? 'bg-pink-500' : i === 2 ? 'bg-cyan-500' : 'bg-orange-500'
-                  }`}
-                  style={{ fontSize: Math.max(cellSize * 0.6, 10) }}
-                >
-                  👻
-                </div>
-              </div>
-            ))}
-
-            {(gameOver || gameWon) && (
-              <div className="absolute inset-0 bg-black bg-opacity-80 flex items-center justify-center">
-                <div className="text-center px-4">
-                  <h2 className="text-2xl sm:text-4xl font-bold mb-2 sm:mb-4 text-yellow-400">
-                    {gameWon ? '🎉 ПОБЕДА!' : '💀 GAME OVER'}
-                  </h2>
-                  <p className="text-xl sm:text-2xl text-white mb-4 sm:mb-6">Счёт: {score}</p>
-                  <Button onClick={resetGame} size="lg" className="bg-yellow-400 text-black hover:bg-yellow-500">
-                    Играть снова
-                  </Button>
-                </div>
-              </div>
-            )}
-          </div>
-        </Card>
-
-        <div className="grid grid-cols-3 gap-2 w-48 sm:w-64 mt-2">
-          <div className="col-start-2">
             <Button
-              onClick={() => setDirection('UP')}
-              className="w-full h-12 sm:h-16 bg-blue-600 hover:bg-blue-700 text-white"
-              size="lg"
+              onClick={startGame}
+              className="bg-[#FFFF00] text-[#000000] hover:bg-[#FFB852] text-xl px-8 py-6 font-['Press_Start_2P']"
             >
-              <Icon name="ChevronUp" size={24} />
+              START GAME
             </Button>
           </div>
-          <Button
-            onClick={() => setDirection('LEFT')}
-            className="w-full h-12 sm:h-16 bg-blue-600 hover:bg-blue-700 text-white col-start-1 row-start-2"
-            size="lg"
-          >
-            <Icon name="ChevronLeft" size={24} />
-          </Button>
-          <Button
-            onClick={() => setDirection('DOWN')}
-            className="w-full h-12 sm:h-16 bg-blue-600 hover:bg-blue-700 text-white col-start-2 row-start-2"
-            size="lg"
-          >
-            <Icon name="ChevronDown" size={24} />
-          </Button>
-          <Button
-            onClick={() => setDirection('RIGHT')}
-            className="w-full h-12 sm:h-16 bg-blue-600 hover:bg-blue-700 text-white col-start-3 row-start-2"
-            size="lg"
-          >
-            <Icon name="ChevronRight" size={24} />
-          </Button>
-        </div>
+        )}
 
-        <div className="text-center text-white text-sm sm:text-lg pb-2">
-          <p className="hidden sm:block">Используйте стрелки ← → ↑ ↓ для управления</p>
-          <p className="sm:hidden">Нажимайте на стрелки для управления</p>
-        </div>
+        {gameState === 'paused' && (
+          <div className="animate-scale-in mb-8">
+            <p className="text-[#FFFF00] text-2xl mb-6">PAUSED</p>
+            <Button
+              onClick={resumeGame}
+              className="bg-[#FFFF00] text-[#000000] hover:bg-[#FFB852] text-xl px-8 py-6 font-['Press_Start_2P']"
+            >
+              RESUME
+            </Button>
+          </div>
+        )}
 
-        <style>{`
-          @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
-          .retro-text {
-            font-family: 'Press Start 2P', cursive;
-            text-shadow: 0 0 10px #ffd700, 0 0 20px #ffd700;
-          }
-        `}</style>
+        {gameState === 'gameover' && (
+          <div className="animate-scale-in mb-8">
+            <p className="text-[#FF0000] text-3xl mb-4">GAME OVER</p>
+            <p className="text-[#FFFF00] text-xl mb-6">Score: {score}</p>
+            <Button
+              onClick={startGame}
+              className="bg-[#FFFF00] text-[#000000] hover:bg-[#FFB852] text-xl px-8 py-6 font-['Press_Start_2P']"
+            >
+              PLAY AGAIN
+            </Button>
+          </div>
+        )}
+
+        {(gameState === 'playing' || gameState === 'paused') && (
+          <>
+            <div className="flex justify-center gap-8 mb-4 text-[#FFFF00] text-sm">
+              <div>SCORE: {score}</div>
+              <div>LIVES: {'🟡'.repeat(lives)}</div>
+              {powerMode && <div className="text-[#00FFFF] animate-pulse">POWER!</div>}
+            </div>
+
+            <div 
+              className="inline-block border-4 border-[#0000FF] relative"
+              style={{
+                width: GRID_SIZE * CELL_SIZE,
+                height: GRID_HEIGHT * CELL_SIZE,
+                backgroundColor: '#000000',
+              }}
+            >
+              {MAZE.map((row, y) =>
+                row.split('').map((cell, x) => {
+                  if (cell === '#') {
+                    return (
+                      <div
+                        key={`${x}-${y}`}
+                        className="absolute"
+                        style={{
+                          left: x * CELL_SIZE,
+                          top: y * CELL_SIZE,
+                          width: CELL_SIZE,
+                          height: CELL_SIZE,
+                          backgroundColor: '#0000FF',
+                          border: '1px solid #4169E1',
+                        }}
+                      />
+                    );
+                  }
+                  if (cell === '.') {
+                    const dotKey = `${x},${y}`;
+                    if (dots.has(dotKey)) {
+                      return (
+                        <div
+                          key={`dot-${x}-${y}`}
+                          className="absolute rounded-full"
+                          style={{
+                            left: x * CELL_SIZE + CELL_SIZE / 2 - 2,
+                            top: y * CELL_SIZE + CELL_SIZE / 2 - 2,
+                            width: 4,
+                            height: 4,
+                            backgroundColor: '#FFB897',
+                          }}
+                        />
+                      );
+                    }
+                  }
+                  if (cell === 'O') {
+                    return (
+                      <div
+                        key={`power-${x}-${y}`}
+                        className="absolute rounded-full animate-pulse"
+                        style={{
+                          left: x * CELL_SIZE + CELL_SIZE / 2 - 4,
+                          top: y * CELL_SIZE + CELL_SIZE / 2 - 4,
+                          width: 8,
+                          height: 8,
+                          backgroundColor: '#FFB897',
+                        }}
+                      />
+                    );
+                  }
+                  return null;
+                })
+              )}
+
+              <div
+                className="absolute rounded-full transition-all duration-100"
+                style={{
+                  left: pacman.x * CELL_SIZE + 2,
+                  top: pacman.y * CELL_SIZE + 2,
+                  width: CELL_SIZE - 4,
+                  height: CELL_SIZE - 4,
+                  backgroundColor: '#FFFF00',
+                  boxShadow: '0 0 10px #FFFF00',
+                }}
+              />
+
+              {ghosts.map((ghost, i) => (
+                <div
+                  key={`ghost-${i}`}
+                  className="absolute rounded-t-full transition-all duration-100"
+                  style={{
+                    left: ghost.x * CELL_SIZE + 2,
+                    top: ghost.y * CELL_SIZE + 2,
+                    width: CELL_SIZE - 4,
+                    height: CELL_SIZE - 4,
+                    backgroundColor: powerMode ? '#0000FF' : GHOST_COLORS[i],
+                    boxShadow: `0 0 10px ${powerMode ? '#0000FF' : GHOST_COLORS[i]}`,
+                  }}
+                >
+                  <div className="absolute bottom-0 left-0 right-0 h-1/3 flex justify-around">
+                    <div className="w-1/4 h-full bg-[#000000] rounded-b-full" />
+                    <div className="w-1/4 h-full bg-[#000000] rounded-b-full" />
+                    <div className="w-1/4 h-full bg-[#000000] rounded-b-full" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
