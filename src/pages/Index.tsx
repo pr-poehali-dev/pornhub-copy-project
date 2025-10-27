@@ -1,52 +1,70 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Card } from '@/components/ui/card';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
-import Icon from '@/components/ui/icon';
+import { Card } from '@/components/ui/card';
 
-const GRID_SIZE = 20;
+const GRID_SIZE = 28;
+const GRID_HEIGHT = 31;
+const CELL_SIZE = 20;
+const FPS = 10;
 
 type Position = { x: number; y: number };
-type Direction = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT';
+type Direction = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT' | null;
 
 const MAZE = [
-  '####################',
-  '#........#.........#',
-  '#.##.###.#.###.##.#',
-  '#.................#',
-  '#.##.#.#####.#.##.#',
-  '#....#...#...#....#',
-  '####.### # ###.####',
-  '   #.#       #.#   ',
-  '####.# ##### #.####',
-  '    .  #   #  .    ',
-  '####.# ##### #.####',
-  '   #.#       #.#   ',
-  '####.# ##### #.####',
-  '#.........#........#',
-  '#.##.###.#.###.##.#',
-  '#..#.....P.....#..#',
-  '##.#.#.#####.#.#.##',
-  '#....#...#...#....#',
-  '#.######.#.######.#',
-  '####################',
+  '############################',
+  '#............##............#',
+  '#.####.#####.##.#####.####.#',
+  '#O####.#####.##.#####.####O#',
+  '#.####.#####.##.#####.####.#',
+  '#..........................#',
+  '#.####.##.########.##.####.#',
+  '#.####.##.########.##.####.#',
+  '#......##....##....##......#',
+  '######.##### ## #####.######',
+  '######.##### ## #####.######',
+  '######.##          ##.######',
+  '######.## ###--### ##.######',
+  '######.## #      # ##.######',
+  '      .   #      #   .      ',
+  '######.## #      # ##.######',
+  '######.## ######## ##.######',
+  '######.##          ##.######',
+  '######.## ######## ##.######',
+  '######.## ######## ##.######',
+  '#............##............#',
+  '#.####.#####.##.#####.####.#',
+  '#.####.#####.##.#####.####.#',
+  '#O..##.......  .......##..O#',
+  '###.##.##.########.##.##.###',
+  '###.##.##.########.##.##.###',
+  '#......##....##....##......#',
+  '#.##########.##.##########.#',
+  '#.##########.##.##########.#',
+  '#..........................#',
+  '############################',
 ];
 
 const GHOSTS_START: Position[] = [
-  { x: 9, y: 7 },
-  { x: 10, y: 7 },
-  { x: 9, y: 8 },
-  { x: 10, y: 8 },
+  { x: 12, y: 14 },
+  { x: 14, y: 14 },
+  { x: 15, y: 14 },
+  { x: 16, y: 14 },
 ];
 
+const GHOST_COLORS = ['#FF0000', '#00FFFF', '#FFB8FF', '#FFB852'];
+
 const Index = () => {
-  const [cellSize, setCellSize] = useState(20);
-  const [pacman, setPacman] = useState<Position>({ x: 9, y: 15 });
-  const [direction, setDirection] = useState<Direction>('RIGHT');
-  const [ghosts, setGhosts] = useState<Position[]>(GHOSTS_START);
-  const [dots, setDots] = useState<boolean[][]>([]);
+  const [gameState, setGameState] = useState<'menu' | 'playing' | 'paused' | 'gameover'>('menu');
   const [score, setScore] = useState(0);
-  const [gameOver, setGameOver] = useState(false);
-  const [gameWon, setGameWon] = useState(false);
+  const [lives, setLives] = useState(3);
+  const [pacman, setPacman] = useState<Position>({ x: 14, y: 23 });
+  const [direction, setDirection] = useState<Direction>(null);
+  const [nextDirection, setNextDirection] = useState<Direction>(null);
+  const [ghosts, setGhosts] = useState<Position[]>(GHOSTS_START);
+  const [dots, setDots] = useState<Set<string>>(new Set());
+  const [powerMode, setPowerMode] = useState(false);
+  const [powerModeTimer, setPowerModeTimer] = useState<NodeJS.Timeout | null>(null);
+  const gameLoopRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     const updateCellSize = () => {
